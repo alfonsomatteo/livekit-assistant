@@ -12,6 +12,7 @@ from livekit.agents.llm import (
 from livekit.agents.voice_assistant import VoiceAssistant
 from livekit.plugins import deepgram, openai, silero
 
+
 class AssistantFunction(agents.llm.FunctionContext):
     """Questa classe definisce le funzioni che verranno chiamate dall'assistente."""
 
@@ -33,9 +34,9 @@ class AssistantFunction(agents.llm.FunctionContext):
         print(f"Messaggio che ha attivato le capacità visive: {user_msg}")
         return None
 
+
 async def get_video_track(room: rtc.Room):
     """Ottiene la prima traccia video dalla stanza. Useremo questa traccia per processare le immagini."""
-
     video_track = asyncio.Future()
 
     for _, participant in room.remote_participants.items():
@@ -48,6 +49,7 @@ async def get_video_track(room: rtc.Room):
                 break
 
     return await video_track
+
 
 async def entrypoint(ctx: JobContext):
     await ctx.connect()
@@ -132,20 +134,6 @@ async def entrypoint(ctx: JobContext):
             # e la memorizzeremo in una variabile.
             latest_image = event.frame
 
+
 if __name__ == "__main__":
-    # Genera un token di accesso utilizzando le variabili d'ambiente per API Key e Secret
-    api_key = os.getenv("LIVEKIT_API_KEY")
-    api_secret = os.getenv("LIVEKIT_API_SECRET")
-    if not api_key or not api_secret:
-        raise ValueError("LIVEKIT_API_KEY e LIVEKIT_API_SECRET devono essere impostati nelle variabili d'ambiente.")
-
-    token = (
-        api.AccessToken(api_key, api_secret)
-        .with_identity("python-bot")
-        .with_name("Python Bot")
-        .with_grants(api.VideoGrants(room_join=True, room="my-room"))
-        .to_jwt()
-    )
-
-    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint, token=token))
-
+    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))
