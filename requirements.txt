@@ -2,5 +2,5 @@ livekit-agents~=0.8
 livekit-plugins-deepgram~=0.6
 livekit-plugins-openai~=0.7
 livekit-plugins-silero~=0.6
-livekit-server-sdk~=1.0
+git+https://github.com/livekit/server-sdk-python.git
 python-dotenv~=1.0
