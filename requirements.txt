@@ -1,6 +1,6 @@
-livekit-agents~=0.8
-livekit-plugins-deepgram~=0.6
-livekit-plugins-openai~=0.7
-livekit-plugins-silero~=0.6
-livekit-server-sdk @ https://github.com/livekit/server-sdk-python/archive/refs/heads/main.tar.gz
-python-dotenv~=1.0
+livekit
+livekit-api
+livekit-agents
+livekit-plugins-deepgram
+livekit-plugins-openai
+livekit-plugins-silero
