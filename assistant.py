@@ -1,7 +1,8 @@
-import os
 import asyncio
 from typing import Annotated
-from livekit import agents, rtc
+import os
+
+from livekit import agents, rtc, api
 from livekit.agents import JobContext, WorkerOptions, cli, tokenize, tts
 from livekit.agents.llm import (
     ChatContext,
@@ -10,33 +11,14 @@ from livekit.agents.llm import (
 )
 from livekit.agents.voice_assistant import VoiceAssistant
 from livekit.plugins import deepgram, openai, silero
-from livekit_server_sdk import AccessToken  # Corretto import
-
-# Carica le variabili d'ambiente
-LIVEKIT_URL = os.getenv("LIVEKIT_URL")
-LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY")
-LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET")
-
-if not all([LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET]):
-    raise EnvironmentError("Missing LiveKit configuration. Check your environment variables.")
-
-# Funzione per generare un token JWT per la connessione alla stanza
-def generate_room_token(room_name):
-    token = AccessToken(api_key=LIVEKIT_API_KEY, api_secret=LIVEKIT_API_SECRET)
-    token.add_grant({
-        "roomJoin": True,
-        "room": room_name,
-    })
-    return token.to_jwt()
-
 
 class AssistantFunction(agents.llm.FunctionContext):
-    """Define functions that will be called by the assistant."""
+    """Questa classe definisce le funzioni che verranno chiamate dall'assistente."""
 
     @agents.llm.ai_callable(
         description=(
-            "Called when asked to evaluate something that would require vision capabilities,"
-            "for example, an image, video, or the webcam feed."
+            "Chiamato quando viene richiesto di valutare qualcosa che richiede capacità visive,"
+            "ad esempio un'immagine, un video o il feed della webcam."
         )
     )
     async def image(
@@ -44,17 +26,17 @@ class AssistantFunction(agents.llm.FunctionContext):
         user_msg: Annotated[
             str,
             agents.llm.TypeInfo(
-                description="The user message that triggered this function"
+                description="Il messaggio dell'utente che ha attivato questa funzione"
             ),
         ],
     ):
-        print(f"Message triggering vision capabilities: {user_msg}")
+        print(f"Messaggio che ha attivato le capacità visive: {user_msg}")
         return None
 
-
 async def get_video_track(room: rtc.Room):
-    """Get the first video track from the room. We'll use this track to process images."""
-    video_track = asyncio.Future[rtc.RemoteVideoTrack]()
+    """Ottiene la prima traccia video dalla stanza. Useremo questa traccia per processare le immagini."""
+
+    video_track = asyncio.Future()
 
     for _, participant in room.remote_participants.items():
         for _, track_publication in participant.track_publications.items():
@@ -62,39 +44,31 @@ async def get_video_track(room: rtc.Room):
                 track_publication.track, rtc.RemoteVideoTrack
             ):
                 video_track.set_result(track_publication.track)
-                print(f"Using video track {track_publication.track.sid}")
+                print(f"Utilizzando la traccia video {track_publication.track.sid}")
                 break
 
     return await video_track
 
-
 async def entrypoint(ctx: JobContext):
-    # Configurazione per la connessione alla stanza
-    room_name = "test_room"  # Sostituisci con il nome della tua stanza
-    room_token = generate_room_token(room_name)
-    ctx.room_url = LIVEKIT_URL
+    await ctx.connect()
+    print(f"Nome della stanza: {ctx.room.name}")
 
-    # Connetti alla stanza con il token
-    print(f"Connecting to LiveKit at {LIVEKIT_URL}")
-    await ctx.connect(token=room_token)
-    print(f"Connected to room: {ctx.room.name}")
-
-    # Configura il contesto per l'assistente vocale
     chat_context = ChatContext(
         messages=[
             ChatMessage(
                 role="system",
                 content=(
-                    "Your name is Alloy. You are a funny, witty bot. Your interface with users will be voice and vision."
-                    "Respond with short and concise answers. Avoid using unpronouncable punctuation or emojis."
+                    "Il tuo nome è Alloy. Sei un bot divertente e spiritoso. La tua interfaccia con gli utenti sarà vocale e visiva."
+                    "Rispondi con risposte brevi e concise. Evita di usare punteggiatura impronunciabile o emoji."
                 ),
             )
         ]
     )
 
-    gpt = openai.LLM(model="gpt-4o")
+    gpt = openai.LLM(model="gpt-4")
 
-    # Configura TTS con StreamAdapter
+    # Poiché OpenAI non supporta lo streaming TTS, lo useremo con un StreamAdapter
+    # per renderlo compatibile con il VoiceAssistant
     openai_tts = tts.StreamAdapter(
         tts=openai.TTS(voice="alloy"),
         sentence_tokenizer=tokenize.basic.SentenceTokenizer(),
@@ -103,10 +77,10 @@ async def entrypoint(ctx: JobContext):
     latest_image: rtc.VideoFrame | None = None
 
     assistant = VoiceAssistant(
-        vad=silero.VAD.load(),
-        stt=deepgram.STT(),
+        vad=silero.VAD.load(),  # Useremo il Voice Activity Detector (VAD) di Silero
+        stt=deepgram.STT(),  # Useremo il Speech To Text (STT) di Deepgram
         llm=gpt,
-        tts=openai_tts,
+        tts=openai_tts,  # Useremo il Text To Speech (TTS) di OpenAI
         fnc_ctx=AssistantFunction(),
         chat_ctx=chat_context,
     )
@@ -114,24 +88,30 @@ async def entrypoint(ctx: JobContext):
     chat = rtc.ChatManager(ctx.room)
 
     async def _answer(text: str, use_image: bool = False):
-        """Answer the user's message."""
+        """
+        Risponde al messaggio dell'utente con il testo fornito e, facoltativamente,
+        con l'ultima immagine catturata dalla traccia video.
+        """
         content: list[str | ChatImage] = [text]
         if use_image and latest_image:
             content.append(ChatImage(image=latest_image))
 
         chat_context.messages.append(ChatMessage(role="user", content=content))
+
         stream = gpt.chat(chat_ctx=chat_context)
         await assistant.say(stream, allow_interruptions=True)
 
     @chat.on("message_received")
     def on_message_received(msg: rtc.ChatMessage):
-        """Event triggered when a message is received."""
+        """Questo evento si attiva ogni volta che riceviamo un nuovo messaggio dall'utente."""
+
         if msg.message:
             asyncio.create_task(_answer(msg.message, use_image=False))
 
     @assistant.on("function_calls_finished")
     def on_function_calls_finished(called_functions: list[agents.llm.CalledFunction]):
-        """Event triggered when assistant functions complete."""
+        """Questo evento si attiva quando una chiamata di funzione dell'assistente è completata."""
+
         if len(called_functions) == 0:
             return
 
@@ -142,13 +122,30 @@ async def entrypoint(ctx: JobContext):
     assistant.start(ctx.room)
 
     await asyncio.sleep(1)
-    await assistant.say("Hi there! How can I help?", allow_interruptions=True)
+    await assistant.say("Ciao! Come posso aiutarti?", allow_interruptions=True)
 
     while ctx.room.connection_state == rtc.ConnectionState.CONN_CONNECTED:
         video_track = await get_video_track(ctx.room)
+
         async for event in rtc.VideoStream(video_track):
+            # Continueremo a prendere l'ultima immagine dalla traccia video
+            # e la memorizzeremo in una variabile.
             latest_image = event.frame
 
-
 if __name__ == "__main__":
-    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))
+    # Genera un token di accesso utilizzando le variabili d'ambiente per API Key e Secret
+    api_key = os.getenv("LIVEKIT_API_KEY")
+    api_secret = os.getenv("LIVEKIT_API_SECRET")
+    if not api_key or not api_secret:
+        raise ValueError("LIVEKIT_API_KEY e LIVEKIT_API_SECRET devono essere impostati nelle variabili d'ambiente.")
+
+    token = (
+        api.AccessToken(api_key, api_secret)
+        .with_identity("python-bot")
+        .with_name("Python Bot")
+        .with_grants(api.VideoGrants(room_join=True, room="my-room"))
+        .to_jwt()
+    )
+
+    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint, token=token))
+
