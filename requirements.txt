@@ -2,5 +2,5 @@ livekit-agents~=0.8
 livekit-plugins-deepgram~=0.6
 livekit-plugins-openai~=0.7
 livekit-plugins-silero~=0.6
+livekit-server-sdk~=2.0  # Questo SDK include AccessToken
 python-dotenv~=1.0
-flask~=2.3  # O fastapi~=0.103 se usi FastAPI
