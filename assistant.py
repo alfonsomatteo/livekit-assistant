@@ -1,6 +1,6 @@
+import os
 import asyncio
 from typing import Annotated
-
 from livekit import agents, rtc
 from livekit.agents import JobContext, WorkerOptions, cli, tokenize, tts
 from livekit.agents.llm import (
@@ -10,10 +10,29 @@ from livekit.agents.llm import (
 )
 from livekit.agents.voice_assistant import VoiceAssistant
 from livekit.plugins import deepgram, openai, silero
+from livekit.rtc import AccessToken
+
+
+# Carica le variabili d'ambiente
+LIVEKIT_URL = os.getenv("LIVEKIT_URL")
+LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY")
+LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET")
+
+if not all([LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET]):
+    raise EnvironmentError("Missing LiveKit configuration. Check your environment variables.")
+
+# Funzione per generare un token JWT per la connessione alla stanza
+def generate_room_token(room_name):
+    token = AccessToken(api_key=LIVEKIT_API_KEY, api_secret=LIVEKIT_API_SECRET)
+    token.add_grant({
+        "roomJoin": True,
+        "room": room_name,
+    })
+    return token.to_jwt()
 
 
 class AssistantFunction(agents.llm.FunctionContext):
-    """This class is used to define functions that will be called by the assistant."""
+    """Define functions that will be called by the assistant."""
 
     @agents.llm.ai_callable(
         description=(
@@ -36,7 +55,6 @@ class AssistantFunction(agents.llm.FunctionContext):
 
 async def get_video_track(room: rtc.Room):
     """Get the first video track from the room. We'll use this track to process images."""
-
     video_track = asyncio.Future[rtc.RemoteVideoTrack]()
 
     for _, participant in room.remote_participants.items():
@@ -52,9 +70,17 @@ async def get_video_track(room: rtc.Room):
 
 
 async def entrypoint(ctx: JobContext):
-    await ctx.connect()
-    print(f"Room name: {ctx.room.name}")
+    # Configurazione per la connessione alla stanza
+    room_name = "test_room"  # Sostituisci con il nome della tua stanza
+    room_token = generate_room_token(room_name)
+    ctx.room_url = LIVEKIT_URL
 
+    # Connetti alla stanza con il token
+    print(f"Connecting to LiveKit at {LIVEKIT_URL}")
+    await ctx.connect(token=room_token)
+    print(f"Connected to room: {ctx.room.name}")
+
+    # Configura il contesto per l'assistente vocale
     chat_context = ChatContext(
         messages=[
             ChatMessage(
@@ -69,8 +95,7 @@ async def entrypoint(ctx: JobContext):
 
     gpt = openai.LLM(model="gpt-4o")
 
-    # Since OpenAI does not support streaming TTS, we'll use it with a StreamAdapter
-    # to make it compatible with the VoiceAssistant
+    # Configura TTS con StreamAdapter
     openai_tts = tts.StreamAdapter(
         tts=openai.TTS(voice="alloy"),
         sentence_tokenizer=tokenize.basic.SentenceTokenizer(),
@@ -79,10 +104,10 @@ async def entrypoint(ctx: JobContext):
     latest_image: rtc.VideoFrame | None = None
 
     assistant = VoiceAssistant(
-        vad=silero.VAD.load(),  # We'll use Silero's Voice Activity Detector (VAD)
-        stt=deepgram.STT(),  # We'll use Deepgram's Speech To Text (STT)
+        vad=silero.VAD.load(),
+        stt=deepgram.STT(),
         llm=gpt,
-        tts=openai_tts,  # We'll use OpenAI's Text To Speech (TTS)
+        tts=openai_tts,
         fnc_ctx=AssistantFunction(),
         chat_ctx=chat_context,
     )
@@ -90,30 +115,24 @@ async def entrypoint(ctx: JobContext):
     chat = rtc.ChatManager(ctx.room)
 
     async def _answer(text: str, use_image: bool = False):
-        """
-        Answer the user's message with the given text and optionally the latest
-        image captured from the video track.
-        """
+        """Answer the user's message."""
         content: list[str | ChatImage] = [text]
         if use_image and latest_image:
             content.append(ChatImage(image=latest_image))
 
         chat_context.messages.append(ChatMessage(role="user", content=content))
-
         stream = gpt.chat(chat_ctx=chat_context)
         await assistant.say(stream, allow_interruptions=True)
 
     @chat.on("message_received")
     def on_message_received(msg: rtc.ChatMessage):
-        """This event triggers whenever we get a new message from the user."""
-
+        """Event triggered when a message is received."""
         if msg.message:
             asyncio.create_task(_answer(msg.message, use_image=False))
 
     @assistant.on("function_calls_finished")
     def on_function_calls_finished(called_functions: list[agents.llm.CalledFunction]):
-        """This event triggers when an assistant's function call completes."""
-
+        """Event triggered when assistant functions complete."""
         if len(called_functions) == 0:
             return
 
@@ -128,10 +147,7 @@ async def entrypoint(ctx: JobContext):
 
     while ctx.room.connection_state == rtc.ConnectionState.CONN_CONNECTED:
         video_track = await get_video_track(ctx.room)
-
         async for event in rtc.VideoStream(video_track):
-            # We'll continually grab the latest image from the video track
-            # and store it in a variable.
             latest_image = event.frame
 
 
