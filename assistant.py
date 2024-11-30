@@ -10,8 +10,7 @@ from livekit.agents.llm import (
 )
 from livekit.agents.voice_assistant import VoiceAssistant
 from livekit.plugins import deepgram, openai, silero
-from livekit.rtc import AccessToken
-
+from livekit_server_sdk import AccessToken  # Corretto import
 
 # Carica le variabili d'ambiente
 LIVEKIT_URL = os.getenv("LIVEKIT_URL")
